@@ -65,28 +65,6 @@ def get_security_rules(api_url, token, device_id):
         print(f"Failed to fetch security rules for device ID {device_id}:", response.status_code, response.text)
         sys.exit(1)
 
-# Function to get the FireMon Object service name by port and protocol
-def get_service_name(api_url, token, protocol, port):
-    headers = {
-        'X-FM-AUTH-Token': token,
-        'Content-Type': 'application/json'
-    }
-    url = f"{api_url}/securitymanager/api/domain/1/service?type={protocol}&useWildcardSearch=true&port={port}&page=0&pageSize=20&sort=name"
-    try:
-        response = requests.get(url, headers=headers, verify=False)
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching service name for {protocol}/{port}: {e}")
-        return f"{protocol}/{port}"  # Fallback
-    
-    if response.status_code == 200:
-        data = response.json()
-        if data.get('count', 0) > 0:
-            try:
-                return data['results'][0]['name']
-            except (KeyError, IndexError):
-                return f"{protocol}/{port}"
-    return f"{protocol}/{port}"  # Fallback to protocol/port if no service name found
-
 # Function to get device name by device ID
 def get_device_name(api_url, token, device_id):
     headers = {
@@ -195,7 +173,7 @@ def process_rules_to_csv(api_url, token, rules, output_file):
     with open(output_file, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         # CSV header
-        writer.writerow(['Source Zone', 'Destination Zone', 'Service Name', 'Protocol', 'Start Port', 'End Port'])
+        writer.writerow(['Source Zone', 'Destination Zone', 'Protocol/Port', 'Protocol', 'Start Port', 'End Port'])
 
         for rule in rules:
             src_context = rule.get('srcContext', {})
@@ -207,26 +185,31 @@ def process_rules_to_csv(api_url, token, rules, output_file):
             for service in services:
                 service_entries = service.get('services', [])
                 for srv in service_entries:
-                    protocol = srv.get('type', 'Unknown')
+                    protocol = srv.get('type', 'Unknown').lower()
                     start_port = srv.get('startPort', '')
                     end_port = srv.get('endPort', '')
 
-                    # Ensure start_port is available for service name lookup
-                    port = start_port if start_port else '0'
-
-                    # Get the FireMon Object service name using port and protocol
-                    service_name = get_service_name(api_url, token, protocol, port)
+                    # Format protocol and ports
+                    if start_port and end_port:
+                        if start_port == end_port:
+                            protocol_port = f"{protocol}/{start_port}"
+                        else:
+                            protocol_port = f"{protocol}/{start_port}-{end_port}"
+                    elif start_port:
+                        protocol_port = f"{protocol}/{start_port}"
+                    else:
+                        protocol_port = f"{protocol}/Any"
 
                     writer.writerow([
                         ', '.join(src_zones) if src_zones else 'Any',
                         ', '.join(dst_zones) if dst_zones else 'Any',
-                        service_name,
+                        protocol_port,
                         protocol,
                         start_port,
                         end_port
                     ])
 
-# Generate a matrix HTML report showing access between zones with allowed services in the grid
+# Generate a matrix HTML report showing access between zones with allowed protocols and ports in the grid
 def generate_html_matrix(rules, output_html, device_name):
     zone_access = defaultdict(lambda: defaultdict(set))
 
@@ -240,8 +223,22 @@ def generate_html_matrix(rules, output_html, device_name):
         for service in services:
             service_entries = service.get('services', [])
             for srv in service_entries:
-                service_name = service.get('name', 'Unknown Service')
-                zone_access[src_zones][dst_zones].add(service_name)
+                protocol = srv.get('type', 'Unknown').lower()
+                start_port = srv.get('startPort', '')
+                end_port = srv.get('endPort', '')
+
+                # Format protocol and ports
+                if start_port and end_port:
+                    if start_port == end_port:
+                        protocol_port = f"{protocol}/{start_port}"
+                    else:
+                        protocol_port = f"{protocol}/{start_port}-{end_port}"
+                elif start_port:
+                    protocol_port = f"{protocol}/{start_port}"
+                else:
+                    protocol_port = f"{protocol}/Any"
+
+                zone_access[src_zones][dst_zones].add(protocol_port)
 
     # Collect unique zones for the matrix
     source_zones = sorted(zone_access.keys())
@@ -312,11 +309,6 @@ def generate_html_matrix(rules, output_html, device_name):
         tr:nth-child(even) {{
             background-color: #f9fafb;
         }}
-        /* Removed tr:hover background-color
-        tr:hover {{
-            background-color: #f1f3f5;
-        }}
-        */
         /* First column styling */
         th:first-child, td:first-child {{
             background-color: #2c3e50;
@@ -324,10 +316,10 @@ def generate_html_matrix(rules, output_html, device_name):
             position: sticky;
             left: 0;
             z-index: 1;
-            border-right: 2px solid #ecf0f1;
+            border-right: 1px solid #dee2e6;
         }}
         
-        /* Updated highlight classes */
+        /* Highlight classes */
         .cell-highlight {{
             background-color: #f1c40f !important;
             color: #2c3e50 !important;
@@ -335,7 +327,6 @@ def generate_html_matrix(rules, output_html, device_name):
             z-index: 3;
         }}
         
-        /* Header highlights */
         .header-highlight {{
             background-color: #e67e22 !important;
             color: white !important;
@@ -343,22 +334,10 @@ def generate_html_matrix(rules, output_html, device_name):
             z-index: 3;
         }}
         
-        /* Path highlights */
         .path-highlight {{
             background-color: #fff3cd !important;
             position: relative;
             z-index: 2;
-        }}
-        
-        /* Grid lines */
-        .grid-horizontal {{
-            border-top: 2px solid #e67e22 !important;
-            border-bottom: 2px solid #e67e22 !important;
-        }}
-        
-        .grid-vertical {{
-            border-left: 2px solid #e67e22 !important;
-            border-right: 2px solid #e67e22 !important;
         }}
         
         /* Tooltip styles */
@@ -389,25 +368,47 @@ def generate_html_matrix(rules, output_html, device_name):
             document.body.appendChild(tooltip);
             
             function clearHighlights() {{
-                const highlighted = table.querySelectorAll('.cell-highlight, .header-highlight, .path-highlight, .grid-horizontal, .grid-vertical');
+                const highlighted = table.querySelectorAll('.cell-highlight, .header-highlight, .path-highlight');
                 highlighted.forEach(el => {{
-                    el.classList.remove('cell-highlight', 'header-highlight', 'path-highlight', 'grid-horizontal', 'grid-vertical');
+                    el.classList.remove('cell-highlight', 'header-highlight', 'path-highlight');
                 }});
             }}
             
             function showTooltip(cell, event) {{
-                const content = cell.textContent;
-                if (content && content !== 'None') {{
-                    tooltip.textContent = content;
+                const srcZone = cell.getAttribute('data-src-zone');
+                const dstZone = cell.getAttribute('data-dst-zone');
+                
+                if (srcZone && dstZone) {{
+                    tooltip.innerHTML = `<strong>Source Zone:</strong> ${{srcZone}}<br><strong>Destination Zone:</strong> ${{dstZone}}`;
                     tooltip.classList.add('show');
                     
                     // Position tooltip
                     const rect = cell.getBoundingClientRect();
+                    const tooltipRect = tooltip.getBoundingClientRect();
                     const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
                     const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
                     
-                    tooltip.style.top = `${{rect.top + scrollTop - tooltip.offsetHeight - 10}}px`;
-                    tooltip.style.left = `${{rect.left + scrollLeft + (rect.width / 2) - (tooltip.offsetWidth / 2)}}px`;
+                    // Calculate position to avoid tooltip going off-screen
+                    let top = rect.top + scrollTop - tooltipRect.height - 10;
+                    let left = rect.left + scrollLeft + (rect.width / 2) - (tooltipRect.width / 2);
+                    
+                    // Adjust if tooltip goes beyond the top
+                    if (top < scrollTop) {{
+                        top = rect.bottom + scrollTop + 10; // Place below the cell
+                    }}
+                    
+                    // Adjust if tooltip goes beyond the left
+                    if (left < scrollLeft) {{
+                        left = scrollLeft + 10;
+                    }}
+                    
+                    // Adjust if tooltip goes beyond the right
+                    if (left + tooltipRect.width > scrollLeft + window.innerWidth) {{
+                        left = scrollLeft + window.innerWidth - tooltipRect.width - 10;
+                    }}
+                    
+                    tooltip.style.top = `${{top}}px`;
+                    tooltip.style.left = `${{left}}px`;
                 }}
             }}
             
@@ -441,30 +442,6 @@ def generate_html_matrix(rules, output_html, device_name):
                 for (let i = 1; i < rowIndex; i++) {{
                     table.rows[i].cells[cellIndex].classList.add('path-highlight');
                 }}
-                
-                // Highlight row borders from first cell to hovered cell (excluding hovered cell)
-                for(let i = 0; i < cellIndex; i++) {{
-                    const currentCell = row.cells[i];
-                    if(currentCell) {{
-                        currentCell.classList.add('row-border-highlight');
-                    }}
-                }}
-    
-                // Highlight column borders from first header cell to hovered cell's row (including hovered cell)
-                for(let i = 0; i <= rowIndex; i++) {{
-                    const currentRow = table.rows[i];
-                    if(currentRow) {{
-                        const currentCell = currentRow.cells[cellIndex];
-                        if(currentCell) {{
-                            currentCell.classList.add('column-border-highlight');
-                        }}
-                    }}
-                }}
-                
-                // Add grid lines
-                row.classList.add('grid-horizontal');
-                const cells = table.querySelectorAll(`td:nth-child({{cellIndex + 1}})`);
-                cells.forEach(c => c.classList.add('grid-vertical'));
                 
                 // Show tooltip
                 showTooltip(cell, e);
@@ -504,9 +481,9 @@ def generate_html_matrix(rules, output_html, device_name):
     for src_zone in source_zones:
         html_content += f"                        <tr>\n                            <th>{src_zone}</th>\n"
         for dst_zone in destination_zones:
-            services = ', '.join(sorted(zone_access[src_zone][dst_zone])) if dst_zone in zone_access[src_zone] else "None"
-            # Removed tooltip by eliminating the title attribute
-            html_content += f"                            <td>{services}</td>\n"
+            protocols_ports = ', '.join(sorted(zone_access[src_zone][dst_zone])) if dst_zone in zone_access[src_zone] else "None"
+            # Add data attributes for source and destination zones
+            html_content += f"                            <td data-src-zone=\"{src_zone}\" data-dst-zone=\"{dst_zone}\">{protocols_ports}</td>\n"
         html_content += "                        </tr>\n"
 
     # Close table and HTML tags
