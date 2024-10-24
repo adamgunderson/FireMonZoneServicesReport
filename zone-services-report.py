@@ -20,6 +20,9 @@ except ImportError:
 # Suppress warnings for unverified HTTPS requests
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
+# Global cache for service names to avoid redundant API calls
+service_name_cache = {}
+
 # Function to authenticate and get the token
 def authenticate(api_url, username, password):
     login_url = f"{api_url}/securitymanager/api/authentication/login"
@@ -168,12 +171,88 @@ def get_devices_by_group(api_url, token, group_id):
             sys.exit(1)
     return all_devices
 
+# Function to get the FireMon Object service name by port and protocol
+def get_service_name(api_url, token, protocol, port, portEnd=None, protocol_number=None):
+    """
+    Fetches the service name from FireMon based on protocol and port.
+
+    Parameters:
+    - api_url (str): Base URL of the FireMon API.
+    - token (str): Authentication token.
+    - protocol (str): Protocol type (e.g., TCP, UDP, ICMP).
+    - port (str): Port number as a string.
+    - portEnd (str, optional): End port number as a string if the service covers a range.
+    - protocol_number (int, optional): Protocol number if port is not specified.
+
+    Returns:
+    - str: Service name or a formatted protocol/port string if not found.
+    """
+    global service_name_cache
+
+    # Normalize protocol
+    protocol = protocol.upper()
+
+    # Determine cache key
+    if portEnd:
+        cache_key = (protocol, portEnd, 'portEnd')
+    elif port:
+        cache_key = (protocol, port, 'port')
+    elif protocol_number:
+        cache_key = (protocol, protocol_number, 'protocol_number')
+    else:
+        cache_key = ("Unknown", "Unknown", "unknown")
+
+    # Check if service name is already cached
+    if cache_key in service_name_cache:
+        return service_name_cache[cache_key]
+
+    headers = {
+        'X-FM-AUTH-Token': token,
+        'Content-Type': 'application/json'
+    }
+
+    # Construct the API URL based on available parameters
+    if portEnd:
+        # Query by protocol type and portEnd
+        url = f"{api_url}/securitymanager/api/domain/1/service?type={protocol}&useWildcardSearch=true&portEnd={portEnd}&page=0&pageSize=20&sort=name"
+    elif port:
+        # Query by protocol type and port
+        url = f"{api_url}/securitymanager/api/domain/1/service?type={protocol}&useWildcardSearch=true&port={port}&page=0&pageSize=20&sort=name"
+    elif protocol_number:
+        # Query by protocol type and protocol number
+        url = f"{api_url}/securitymanager/api/domain/1/service?type={protocol}&useWildcardSearch=true&protocol={protocol_number}&page=0&pageSize=20&sort=name"
+    else:
+        # If neither port nor protocol number is provided, return 'Unknown'
+        service_name_cache[cache_key] = "Unknown"
+        return "Unknown"
+
+    try:
+        response = requests.get(url, headers=headers, verify=False)
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching service name for {protocol}/ {'portEnd' if portEnd else 'port'} {portEnd if portEnd else port}: {e}")
+        service_name_cache[cache_key] = f"{protocol}/{portEnd}" if portEnd else f"{protocol}/{port}"
+        return service_name_cache[cache_key]
+    
+    if response.status_code == 200:
+        data = response.json()
+        if data.get('count', 0) > 0:
+            try:
+                service_name = data['results'][0]['name']
+                service_name_cache[cache_key] = service_name
+                return service_name
+            except (KeyError, IndexError):
+                service_name_cache[cache_key] = f"{protocol}/{portEnd}" if portEnd else f"{protocol}/{port}"
+                return service_name_cache[cache_key]
+    # If no service found, fallback
+    service_name_cache[cache_key] = f"{protocol}/{portEnd}" if portEnd else f"{protocol}/{port}"
+    return service_name_cache[cache_key]
+
 # Process security rules to extract relevant data for CSV
 def process_rules_to_csv(api_url, token, rules, output_file):
     with open(output_file, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         # CSV header
-        writer.writerow(['Source Zone', 'Destination Zone', 'Protocol/Port', 'Protocol', 'Start Port', 'End Port'])
+        writer.writerow(['Source Zone', 'Destination Zone', 'Protocol/Port', 'Protocol', 'Start Port', 'End Port', 'Service Name'])
 
         for rule in rules:
             src_context = rule.get('srcContext', {})
@@ -188,6 +267,21 @@ def process_rules_to_csv(api_url, token, rules, output_file):
                     protocol = srv.get('type', 'Unknown').lower()
                     start_port = srv.get('startPort', '')
                     end_port = srv.get('endPort', '')
+                    protocol_number = srv.get('protocolNumber', None)  # For cases where port is not specified
+
+                    # Determine the port to query
+                    if end_port:
+                        # If end_port exists, use it for querying
+                        query_port = end_port
+                        portEnd = end_port
+                    elif start_port:
+                        # If only start_port exists, use it
+                        query_port = start_port
+                        portEnd = None
+                    else:
+                        # If neither, use protocol_number if available
+                        query_port = None
+                        portEnd = None
 
                     # Format protocol and ports
                     if start_port and end_port:
@@ -200,18 +294,31 @@ def process_rules_to_csv(api_url, token, rules, output_file):
                     else:
                         protocol_port = f"{protocol}/Any"
 
+                    # Fetch service name using protocol and port or protocol number
+                    if query_port:
+                        if portEnd:
+                            service_name = get_service_name(api_url, token, protocol, query_port, portEnd=portEnd)
+                        else:
+                            service_name = get_service_name(api_url, token, protocol, query_port)
+                    elif protocol_number:
+                        service_name = get_service_name(api_url, token, protocol, None, protocol_number=protocol_number)
+                    else:
+                        service_name = "Unknown"
+
                     writer.writerow([
                         ', '.join(src_zones) if src_zones else 'Any',
                         ', '.join(dst_zones) if dst_zones else 'Any',
                         protocol_port,
                         protocol,
-                        start_port,
-                        end_port
+                        start_port if start_port else 'Any',
+                        end_port if end_port else 'Any',
+                        service_name
                     ])
 
 # Generate a matrix HTML report showing access between zones with allowed protocols and ports in the grid
-def generate_html_matrix(rules, output_html, device_name):
+def generate_html_matrix(rules, output_html, device_name, api_url, token):
     zone_access = defaultdict(lambda: defaultdict(set))
+    # Removed zone_services since we no longer need to display services in the tooltip
 
     for rule in rules:
         src_context = rule.get('srcContext', {})
@@ -226,6 +333,21 @@ def generate_html_matrix(rules, output_html, device_name):
                 protocol = srv.get('type', 'Unknown').lower()
                 start_port = srv.get('startPort', '')
                 end_port = srv.get('endPort', '')
+                protocol_number = srv.get('protocolNumber', None)  # For cases where port is not specified
+
+                # Determine the port to query
+                if end_port:
+                    # If end_port exists, use it for querying
+                    query_port = end_port
+                    portEnd = end_port
+                elif start_port:
+                    # If only start_port exists, use it
+                    query_port = start_port
+                    portEnd = None
+                else:
+                    # If neither, use protocol_number if available
+                    query_port = None
+                    portEnd = None
 
                 # Format protocol and ports
                 if start_port and end_port:
@@ -238,7 +360,20 @@ def generate_html_matrix(rules, output_html, device_name):
                 else:
                     protocol_port = f"{protocol}/Any"
 
+                # Fetch service name using protocol and port or protocol number
+                if query_port:
+                    if portEnd:
+                        service_name = get_service_name(api_url, token, protocol, query_port, portEnd=portEnd)
+                    else:
+                        service_name = get_service_name(api_url, token, protocol, query_port)
+                elif protocol_number:
+                    service_name = get_service_name(api_url, token, protocol, None, protocol_number=protocol_number)
+                else:
+                    service_name = "Unknown"
+
+                # Since we are removing services from the tooltip, we do not store them
                 zone_access[src_zones][dst_zones].add(protocol_port)
+                # No need to store service names for tooltips
 
     # Collect unique zones for the matrix
     source_zones = sorted(zone_access.keys())
@@ -379,7 +514,11 @@ def generate_html_matrix(rules, output_html, device_name):
                 const dstZone = cell.getAttribute('data-dst-zone');
                 
                 if (srcZone && dstZone) {{
-                    tooltip.innerHTML = `<strong>Source Zone:</strong> ${{srcZone}}<br><strong>Destination Zone:</strong> ${{dstZone}}`;
+                    let tooltipContent = `<strong>Source Zone:</strong> ${{srcZone}}<br><strong>Destination Zone:</strong> ${{dstZone}}`;
+                    
+                    // Removed services from the tooltip as per the latest requirement
+                    
+                    tooltip.innerHTML = tooltipContent;
                     tooltip.classList.add('show');
                     
                     // Position tooltip
@@ -482,7 +621,7 @@ def generate_html_matrix(rules, output_html, device_name):
         html_content += f"                        <tr>\n                            <th>{src_zone}</th>\n"
         for dst_zone in destination_zones:
             protocols_ports = ', '.join(sorted(zone_access[src_zone][dst_zone])) if dst_zone in zone_access[src_zone] else "None"
-            # Add data attributes for source and destination zones
+            # Add data attributes for source and destination zones only
             html_content += f"                            <td data-src-zone=\"{src_zone}\" data-dst-zone=\"{dst_zone}\">{protocols_ports}</td>\n"
         html_content += "                        </tr>\n"
 
@@ -611,6 +750,6 @@ if __name__ == "__main__":
 
         # Generate HTML matrix report
         if generate_html:
-            generate_html_matrix(rules, OUTPUT_HTML, device_name)
-    
+            generate_html_matrix(rules, OUTPUT_HTML, device_name, api_url, token)
+
     print("\nAll selected reports have been generated successfully.")
