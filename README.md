@@ -2,7 +2,7 @@
 Generates reposts of which services are allowed between firewall zones.
 
 ## Example Usage
-'''
+```
 $ python3 zone-services-report.py
 Enter FireMon host (default: https://localhost):
 Enter FireMon username: adam
