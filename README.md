@@ -1,5 +1,5 @@
 # Zone Services Report
-Generates reposts of which services are allowed between firewall zones.
+Generates reposts that identify which services are allowed between firewall zones.
 
 ## Example Usage
 ```
