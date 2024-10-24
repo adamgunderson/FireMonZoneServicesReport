@@ -29,3 +29,8 @@ HTML matrix report generated: reports/zone_access_matrix_vSRX_Live_-_B.html
 
 All selected reports have been generated successfully.
 ```
+## Example Output
+### CSV
+![image](https://github.com/user-attachments/assets/453a0a32-304b-442f-87e1-41c3942cf76d)
+### HTML
+![image](https://github.com/user-attachments/assets/b91dc0d9-0aa4-497c-a23b-01db109b9f5b)
