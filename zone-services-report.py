@@ -1,10 +1,4 @@
 import sys
-import csv
-import getpass
-import warnings
-import os
-from collections import defaultdict
-
 # Adding FireMon package path
 sys.path.append('/usr/lib/firemon/devpackfw/lib/python3.8/site-packages')
 try:
@@ -16,6 +10,15 @@ except ImportError:
     except ImportError:
         sys.path.append('/usr/lib/firemon/devpackfw/lib/python3.10/site-packages')
         import requests
+import csv
+import getpass
+import warnings
+import os
+import logging
+from collections import defaultdict
+
+# Set up logging configuration
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Suppress warnings for unverified HTTPS requests
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
@@ -31,17 +34,17 @@ def authenticate(api_url, username, password):
     try:
         response = requests.post(login_url, json=payload, headers=headers, verify=False)
     except requests.exceptions.RequestException as e:
-        print("Error during authentication request:", e)
+        logging.error("Error during authentication request: %s", e)
         sys.exit(1)
         
     if response.status_code == 200:
         try:
             return response.json()['token']
         except KeyError:
-            print("Authentication succeeded but token not found in response.")
+            logging.error("Authentication succeeded but token not found in response.")
             sys.exit(1)
     else:
-        print("Authentication failed:", response.status_code, response.text)
+        logging.error("Authentication failed: %s %s", response.status_code, response.text)
         sys.exit(1)
 
 # Function to get security rules from a device
@@ -55,17 +58,19 @@ def get_security_rules(api_url, token, device_id):
     try:
         response = requests.get(url, headers=headers, verify=False)
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching security rules for device ID {device_id}:", e)
+        logging.error(f"Error fetching security rules for device ID {device_id}: %s", e)
         sys.exit(1)
     
     if response.status_code == 200:
         try:
-            return response.json()['results']
+            rules = response.json()['results']
+            logging.info(f"Fetched {len(rules)} security rules for device ID {device_id}")
+            return rules
         except KeyError:
-            print(f"Security rules fetched for device ID {device_id} but 'results' key not found in response.")
+            logging.error(f"Security rules fetched for device ID {device_id} but 'results' key not found in response.")
             sys.exit(1)
     else:
-        print(f"Failed to fetch security rules for device ID {device_id}:", response.status_code, response.text)
+        logging.error(f"Failed to fetch security rules for device ID {device_id}: %s %s", response.status_code, response.text)
         sys.exit(1)
 
 # Function to get device name by device ID
@@ -78,7 +83,7 @@ def get_device_name(api_url, token, device_id):
     try:
         response = requests.get(url, headers=headers, verify=False)
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching device name for device ID {device_id}: {e}")
+        logging.error(f"Error fetching device name for device ID {device_id}: %s", e)
         return f"device_{device_id}"  # Fallback to device ID
     
     if response.status_code == 200:
@@ -87,12 +92,13 @@ def get_device_name(api_url, token, device_id):
             device_name = data.get('name', f"device_{device_id}")
             # Sanitize device name for file system
             device_name = "".join(c for c in device_name if c.isalnum() or c in (' ', '_', '-')).rstrip()
+            logging.debug(f"Device ID {device_id} has name '{device_name}'")
             return device_name
         except KeyError:
-            print(f"Device name not found in response for device ID {device_id}. Using device ID as name.")
+            logging.error(f"Device name not found in response for device ID {device_id}. Using device ID as name.")
             return f"device_{device_id}"
     else:
-        print(f"Failed to fetch device name for device ID {device_id}: {response.status_code} {response.text}")
+        logging.error(f"Failed to fetch device name for device ID {device_id}: %s %s", response.status_code, response.text)
         return f"device_{device_id}"
 
 # Function to get all devices in the domain
@@ -101,7 +107,6 @@ def get_all_devices(api_url, token):
         'X-FM-AUTH-Token': token,
         'Content-Type': 'application/json'
     }
-    # Assuming the endpoint to get all devices is as follows
     url = f"{api_url}/securitymanager/api/domain/1/device"
     all_devices = []
     page = 0
@@ -111,7 +116,7 @@ def get_all_devices(api_url, token):
         try:
             response = requests.get(paged_url, headers=headers, verify=False)
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching devices on page {page}: {e}")
+            logging.error(f"Error fetching devices on page {page}: %s", e)
             sys.exit(1)
         
         if response.status_code == 200:
@@ -121,15 +126,17 @@ def get_all_devices(api_url, token):
                 if not devices:
                     break
                 all_devices.extend(devices)
+                logging.debug(f"Fetched {len(devices)} devices on page {page}")
                 if len(devices) < page_size:
                     break
                 page += 1
             except KeyError:
-                print("Failed to parse devices from response. 'results' key not found.")
+                logging.error("Failed to parse devices from response. 'results' key not found.")
                 sys.exit(1)
         else:
-            print(f"Failed to fetch devices on page {page}: {response.status_code} {response.text}")
+            logging.error(f"Failed to fetch devices on page {page}: %s %s", response.status_code, response.text)
             sys.exit(1)
+    logging.info(f"Total devices fetched: {len(all_devices)}")
     return all_devices
 
 # Function to get devices by device group ID
@@ -138,7 +145,6 @@ def get_devices_by_group(api_url, token, group_id):
         'X-FM-AUTH-Token': token,
         'Content-Type': 'application/json'
     }
-    # Encode the query parameter properly
     query = f"devicegroup{{id={group_id}}}"
     encoded_query = requests.utils.quote(query)
     url = f"{api_url}/securitymanager/api/siql/device/paged-search?q={encoded_query}&page=0&pageSize=100&sort=name"
@@ -150,7 +156,7 @@ def get_devices_by_group(api_url, token, group_id):
         try:
             response = requests.get(paged_url, headers=headers, verify=False)
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching devices in group ID {group_id} on page {page}: {e}")
+            logging.error(f"Error fetching devices in group ID {group_id} on page {page}: %s", e)
             sys.exit(1)
         
         if response.status_code == 200:
@@ -160,33 +166,21 @@ def get_devices_by_group(api_url, token, group_id):
                 if not devices:
                     break
                 all_devices.extend(devices)
+                logging.debug(f"Fetched {len(devices)} devices in group ID {group_id} on page {page}")
                 if len(devices) < page_size:
                     break
                 page += 1
             except KeyError:
-                print(f"Failed to parse devices from response for group ID {group_id}. 'results' key not found.")
+                logging.error(f"Failed to parse devices from response for group ID {group_id}. 'results' key not found.")
                 sys.exit(1)
         else:
-            print(f"Failed to fetch devices in group ID {group_id} on page {page}: {response.status_code} {response.text}")
+            logging.error(f"Failed to fetch devices in group ID {group_id} on page {page}: %s %s", response.status_code, response.text)
             sys.exit(1)
+    logging.info(f"Total devices fetched in group {group_id}: {len(all_devices)}")
     return all_devices
 
 # Function to get the FireMon Object service name by port and protocol
 def get_service_name(api_url, token, protocol, port, portEnd=None, protocol_number=None):
-    """
-    Fetches the service name from FireMon based on protocol and port.
-
-    Parameters:
-    - api_url (str): Base URL of the FireMon API.
-    - token (str): Authentication token.
-    - protocol (str): Protocol type (e.g., TCP, UDP, ICMP).
-    - port (str): Port number as a string.
-    - portEnd (str, optional): End port number as a string if the service covers a range.
-    - protocol_number (int, optional): Protocol number if port is not specified.
-
-    Returns:
-    - str: Service name or a formatted protocol/port string if not found.
-    """
     global service_name_cache
 
     # Normalize protocol
@@ -229,7 +223,7 @@ def get_service_name(api_url, token, protocol, port, portEnd=None, protocol_numb
     try:
         response = requests.get(url, headers=headers, verify=False)
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching service name for {protocol}/ {'portEnd' if portEnd else 'port'} {portEnd if portEnd else port}: {e}")
+        logging.error(f"Error fetching service name for {protocol}/ {'portEnd' if portEnd else 'port'} {portEnd if portEnd else port}: %s", e)
         service_name_cache[cache_key] = f"{protocol}/{portEnd}" if portEnd else f"{protocol}/{port}"
         return service_name_cache[cache_key]
     
@@ -239,12 +233,15 @@ def get_service_name(api_url, token, protocol, port, portEnd=None, protocol_numb
             try:
                 service_name = data['results'][0]['name']
                 service_name_cache[cache_key] = service_name
+                logging.debug(f"Service name found for {protocol}/{port or portEnd or protocol_number}: {service_name}")
                 return service_name
             except (KeyError, IndexError):
                 service_name_cache[cache_key] = f"{protocol}/{portEnd}" if portEnd else f"{protocol}/{port}"
+                logging.debug(f"No service name found, using {service_name_cache[cache_key]}")
                 return service_name_cache[cache_key]
     # If no service found, fallback
     service_name_cache[cache_key] = f"{protocol}/{portEnd}" if portEnd else f"{protocol}/{port}"
+    logging.debug(f"No service found in API response, using {service_name_cache[cache_key]}")
     return service_name_cache[cache_key]
 
 # Process security rules to extract relevant data for CSV
@@ -255,15 +252,19 @@ def process_rules_to_csv(api_url, token, rules, output_file):
         writer.writerow(['Source Zone', 'Destination Zone', 'Protocol/Port', 'Protocol', 'Start Port', 'End Port', 'Service Name'])
 
         for rule in rules:
+            # Log rule ID and source/destination zones
+            rule_id = rule.get('id', 'Unknown')
             src_context = rule.get('srcContext', {})
             dst_context = rule.get('dstContext', {})
             src_zones = [zone.get('name', 'Unknown') for zone in src_context.get('zones', [])]
             dst_zones = [zone.get('name', 'Unknown') for zone in dst_context.get('zones', [])]
+            logging.debug(f"Processing rule ID {rule_id}: Source Zones: {src_zones}, Destination Zones: {dst_zones}")
             services = rule.get('services', [])
 
             for service in services:
                 service_entries = service.get('services', [])
                 for srv in service_entries:
+                    logging.debug(f"Processing service in rule ID {rule_id}: {srv}")
                     protocol = srv.get('type', 'Unknown').lower()
                     start_port = srv.get('startPort', '')
                     end_port = srv.get('endPort', '')
@@ -314,22 +315,25 @@ def process_rules_to_csv(api_url, token, rules, output_file):
                         end_port if end_port else 'Any',
                         service_name
                     ])
+                    logging.debug(f"Wrote CSV row for rule ID {rule_id}: {src_zones} -> {dst_zones}, {protocol_port}, {service_name}")
 
 # Generate a matrix HTML report showing access between zones with allowed protocols and ports in the grid
 def generate_html_matrix(rules, output_html, device_name, api_url, token):
     zone_access = defaultdict(lambda: defaultdict(set))
-    # Removed zone_services since we no longer need to display services in the tooltip
 
     for rule in rules:
+        rule_id = rule.get('id', 'Unknown')
         src_context = rule.get('srcContext', {})
         dst_context = rule.get('dstContext', {})
         src_zones = ', '.join([zone.get('name', 'Unknown') for zone in src_context.get('zones', [])]) or 'Any'
         dst_zones = ', '.join([zone.get('name', 'Unknown') for zone in dst_context.get('zones', [])]) or 'Any'
+        logging.debug(f"Processing rule ID {rule_id} for HTML matrix: Source Zones: {src_zones}, Destination Zones: {dst_zones}")
         services = rule.get('services', [])
 
         for service in services:
             service_entries = service.get('services', [])
             for srv in service_entries:
+                logging.debug(f"Processing service in rule ID {rule_id}: {srv}")
                 protocol = srv.get('type', 'Unknown').lower()
                 start_port = srv.get('startPort', '')
                 end_port = srv.get('endPort', '')
@@ -371,9 +375,8 @@ def generate_html_matrix(rules, output_html, device_name, api_url, token):
                 else:
                     service_name = "Unknown"
 
-                # Since we are removing services from the tooltip, we do not store them
                 zone_access[src_zones][dst_zones].add(protocol_port)
-                # No need to store service names for tooltips
+                logging.debug(f"Added access from '{src_zones}' to '{dst_zones}' with service '{protocol_port}'")
 
     # Collect unique zones for the matrix
     source_zones = sorted(zone_access.keys())
@@ -516,7 +519,7 @@ def generate_html_matrix(rules, output_html, device_name, api_url, token):
                 if (srcZone && dstZone) {{
                     let tooltipContent = `<strong>Source Zone:</strong> ${{srcZone}}<br><strong>Destination Zone:</strong> ${{dstZone}}`;
                     
-                    // Removed services from the tooltip as per the latest requirement
+                    // Tooltip content can be expanded here if needed
                     
                     tooltip.innerHTML = tooltipContent;
                     tooltip.classList.add('show');
@@ -637,7 +640,7 @@ def generate_html_matrix(rules, output_html, device_name, api_url, token):
     # Write the HTML content to the output file
     with open(output_html, 'w', encoding='utf-8') as file:
         file.write(html_content)
-    print(f"HTML matrix report generated: {output_html}")
+    logging.info(f"HTML matrix report generated: {output_html}")
 
 def sanitize_filename(name):
     """Sanitize the device name to be used as a filename."""
@@ -663,44 +666,45 @@ if __name__ == "__main__":
 
     # Authenticate and get token
     token = authenticate(api_url, username, password)
+    logging.info("Authentication successful.")
 
     if selection == '1':
         device_id = input("Enter the device ID: ").strip()
         if device_id.isdigit():
             device_ids.append(device_id)
         else:
-            print("Invalid device ID. Must be a numeric value.")
+            logging.error("Invalid device ID. Must be a numeric value.")
             sys.exit(1)
     elif selection == '2':
         device_id_input = input("Enter the device IDs (comma-separated): ").strip()
         device_id_list = [id.strip() for id in device_id_input.split(',') if id.strip().isdigit()]
         if not device_id_list:
-            print("No valid device IDs entered.")
+            logging.error("No valid device IDs entered.")
             sys.exit(1)
         device_ids.extend(device_id_list)
     elif selection == '3':
-        print("Fetching all devices...")
+        logging.info("Fetching all devices...")
         devices = get_all_devices(api_url, token)
         device_ids = [str(device['id']) for device in devices]
         if not device_ids:
-            print("No devices found in the domain.")
+            logging.error("No devices found in the domain.")
             sys.exit(1)
-        print(f"Total devices fetched: {len(device_ids)}")
+        logging.info(f"Total devices fetched: {len(device_ids)}")
     elif selection == '4':
         group_id = input("Enter the device group ID: ").strip()
         if group_id.isdigit():
-            print(f"Fetching devices in group ID {group_id}...")
+            logging.info(f"Fetching devices in group ID {group_id}...")
             devices_in_group = get_devices_by_group(api_url, token, group_id)
             device_ids = [str(device['id']) for device in devices_in_group]
             if not device_ids:
-                print(f"No devices found in device group ID {group_id}.")
+                logging.error(f"No devices found in device group ID {group_id}.")
                 sys.exit(1)
-            print(f"Total devices fetched in group {group_id}: {len(device_ids)}")
+            logging.info(f"Total devices fetched in group {group_id}: {len(device_ids)}")
         else:
-            print("Invalid device group ID. Must be a numeric value.")
+            logging.error("Invalid device group ID. Must be a numeric value.")
             sys.exit(1)
     else:
-        print("Invalid selection. Please enter 1, 2, 3, or 4.")
+        logging.error("Invalid selection. Please enter 1, 2, 3, or 4.")
         sys.exit(1)
 
     # Report generation options
@@ -721,7 +725,7 @@ if __name__ == "__main__":
         generate_csv = True
         generate_html = True
     else:
-        print("Invalid selection. Please enter 1, 2, or 3.")
+        logging.error("Invalid selection. Please enter 1, 2, or 3.")
         sys.exit(1)
 
     # Create a directory to store reports
@@ -731,12 +735,13 @@ if __name__ == "__main__":
 
     # Process each device
     for device_id in device_ids:
-        print(f"\nProcessing Device ID: {device_id}")
+        logging.info(f"\nProcessing Device ID: {device_id}")
         device_name = get_device_name(api_url, token, device_id)
-        print(f"Device Name: {device_name}")
+        logging.info(f"Device Name: {device_name}")
 
         # Get security rules for the device
         rules = get_security_rules(api_url, token, device_id)
+        logging.info(f"Number of security rules fetched for device ID {device_id}: {len(rules)}")
 
         # Define output file paths using device name
         sanitized_device_name = sanitize_filename(device_name).replace(' ', '_')
@@ -746,10 +751,10 @@ if __name__ == "__main__":
         # Process and save rules to CSV
         if generate_csv:
             process_rules_to_csv(api_url, token, rules, OUTPUT_FILE)
-            print(f"CSV report generated: {OUTPUT_FILE}")
+            logging.info(f"CSV report generated: {OUTPUT_FILE}")
 
         # Generate HTML matrix report
         if generate_html:
             generate_html_matrix(rules, OUTPUT_HTML, device_name, api_url, token)
 
-    print("\nAll selected reports have been generated successfully.")
+    logging.info("\nAll selected reports have been generated successfully.")
