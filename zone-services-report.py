@@ -35,9 +35,13 @@ warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 # Global cache for service names to avoid redundant API calls
 service_name_cache = {}
 
-# Regular expression for matching IP addresses
+# Regular expression for matching IP addresses with optional CIDR notation
 ip_address_pattern = re.compile(
-    r'(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(?:\.(?!$)|$)){4}'
+    r'\b'
+    r'(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}'
+    r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)'
+    r'(?:/\d{1,2})?'
+    r'\b'
 )
 
 # Function to obfuscate IP addresses in data structures
