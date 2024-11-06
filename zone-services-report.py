@@ -7,7 +7,6 @@ import logging
 import argparse
 import re
 from collections import defaultdict
-from copy import deepcopy
 
 # Set up logging configuration near the top
 logging.basicConfig(
@@ -35,13 +34,17 @@ warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 # Global cache for service names to avoid redundant API calls
 service_name_cache = {}
 
-# Regular expression for matching IP addresses with optional CIDR notation
+# Regular expression for matching IP addresses with optional CIDR notation within strings
 ip_address_pattern = re.compile(
-    r'\b'
-    r'(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}'
+    r'(?:^|[^0-9])'  # Start of string or a non-digit character
+    r'('
+    r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.'
+    r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.'
+    r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.'
     r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)'
     r'(?:/\d{1,2})?'
-    r'\b'
+    r')'
+    r'(?:$|[^0-9])'  # End of string or a non-digit character
 )
 
 # Function to obfuscate IP addresses in data structures
@@ -51,8 +54,8 @@ def obfuscate_ip_addresses(data):
     elif isinstance(data, list):
         return [obfuscate_ip_addresses(element) for element in data]
     elif isinstance(data, str):
-        # Replace IP addresses with 'X.X.X.X'
-        return ip_address_pattern.sub('X.X.X.X', data)
+        # Replace IP addresses with 'X.X.X.X' while preserving surrounding characters
+        return ip_address_pattern.sub(lambda m: m.group(0).replace(m.group(1), 'X.X.X.X'), data)
     else:
         return data
 
